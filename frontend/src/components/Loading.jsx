@@ -1,0 +1,1 @@
+// Indicador reutilizable de carga.

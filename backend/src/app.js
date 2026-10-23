@@ -5,6 +5,8 @@ import clientesRoutes from './routes/clientes.routes.js';
 import mesasRoutes from './routes/mesas.routes.js';
 import reservasRoutes from './routes/reservas.routes.js';
 import resumenRoutes from './routes/resumen.routes.js';
+import notFound from './middlewares/notFound.js';
+import errorHandler from './middlewares/errorHandler.js';
 
 const app = express();
 
@@ -36,5 +38,8 @@ app.use('/api/clientes', clientesRoutes);
 app.use('/api/mesas', mesasRoutes);
 app.use('/api/reservas', reservasRoutes);
 app.use('/api/resumen', resumenRoutes);
+
+app.use(notFound);
+app.use(errorHandler);
 
 export default app;

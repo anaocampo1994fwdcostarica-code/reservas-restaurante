@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 export function useApi(funcionApi) {
+  const funcionInicial = useRef(funcionApi);
   const [datos, setDatos] = useState([]);
   const [cargando, setCargando] = useState(true);
   const [error, setError] = useState('');
@@ -20,7 +21,23 @@ export function useApi(funcionApi) {
   }
 
   useEffect(() => {
-    cargarDatos();
+    let vigente = true;
+
+    async function cargaInicial() {
+      try {
+        const resultado = await funcionInicial.current();
+        if (vigente) setDatos(resultado);
+      } catch (error) {
+        if (vigente) setError(error.message);
+      } finally {
+        if (vigente) setCargando(false);
+      }
+    }
+
+    cargaInicial();
+    return () => {
+      vigente = false;
+    };
   }, []);
 
   return {

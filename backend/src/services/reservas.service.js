@@ -1,4 +1,8 @@
 import pool from '../db.js';
+import * as clientesModel from '../models/clientes.model.js';
+import * as mesasModel from '../models/mesas.model.js';
+import * as horariosModel from '../models/horarios.model.js';
+import * as reservasModel from '../models/reservas.model.js';
 
 function crearError(mensaje, status = 409) {
   const error = new Error(mensaje);
@@ -6,271 +10,120 @@ function crearError(mensaje, status = 409) {
   return error;
 }
 
-async function validarDatosReserva(
-  clienteId,
-  mesaId,
-  fecha,
-  horaInicio,
-  horaFin,
-  personas,
-  reservaId = null
-) {
-  const cliente = await pool.query(
-    'SELECT id, no_shows FROM clientes WHERE id = $1',
-    [clienteId]
-  );
+function calcularHoraFin(horaInicio) {
+  const coincidencia = /^(\d{2}):(\d{2})$/.exec(horaInicio || '');
+  if (!coincidencia) return null;
 
-  if (cliente.rowCount === 0) {
-    throw crearError('Cliente no encontrado', 404);
-  }
+  const horas = Number(coincidencia[1]);
+  const minutos = Number(coincidencia[2]);
+  const totalMinutos = horas * 60 + minutos + 120;
+  if (horas > 23 || minutos > 59 || totalMinutos >= 24 * 60) return null;
 
-  if (cliente.rows[0].no_shows >= 3) {
-    throw crearError('El cliente tiene 3 o más no-shows y no puede reservar');
-  }
+  return `${String(Math.floor(totalMinutos / 60)).padStart(2, '0')}:${String(totalMinutos % 60).padStart(2, '0')}`;
+}
 
-  const mesa = await pool.query(
-    'SELECT id, capacidad, activa FROM mesas WHERE id = $1',
-    [mesaId]
-  );
+function prepararDatos(datos) {
+  const clienteId = Number(datos?.cliente_id);
+  const mesaId = Number(datos?.mesa_id);
+  const personas = Number(datos?.personas);
+  const fecha = datos?.fecha;
+  const horaInicio = datos?.hora_inicio;
+  const horaFin = calcularHoraFin(horaInicio);
 
-  if (mesa.rowCount === 0) {
-    throw crearError('Mesa no encontrada', 404);
-  }
-
-  if (!mesa.rows[0].activa) {
-    throw crearError('La mesa seleccionada no está activa');
-  }
-
-  if (personas > mesa.rows[0].capacidad) {
-    throw crearError('La cantidad de personas supera la capacidad de la mesa');
-  }
-
-  const diaSemana = new Date(`${fecha}T12:00:00`).getDay();
-
-  const horario = await pool.query(
-    'SELECT apertura, cierre FROM horarios WHERE dia_semana = $1',
-    [diaSemana]
-  );
-
-  if (horario.rowCount === 0) {
-    throw crearError('El restaurante no tiene horario de atención para ese día');
-  }
-
-  const { apertura, cierre } = horario.rows[0];
-
-  if (horaInicio < apertura || horaFin > cierre) {
+  if (!Number.isInteger(clienteId) || !Number.isInteger(mesaId) ||
+      !Number.isInteger(personas) || personas < 1 ||
+      !/^\d{4}-\d{2}-\d{2}$/.test(fecha || '') || !horaFin) {
     throw crearError(
-      `La reserva debe estar dentro del horario de atención: ${apertura} a ${cierre}`
+      'Datos inválidos. Se requieren cliente_id, mesa_id, fecha, hora_inicio y personas.',
+      400
     );
   }
 
-  const valores = [mesaId, fecha, horaInicio, horaFin];
+  return { clienteId, mesaId, personas, fecha, horaInicio, horaFin, nota: datos.nota };
+}
 
-  let consultaCruce = `
-    SELECT id
-    FROM reservas
-    WHERE mesa_id = $1
-      AND fecha = $2
-      AND estado IN ('pendiente', 'confirmada')
-      AND hora_inicio < $4
-      AND hora_fin > $3
-  `;
-
-  if (reservaId) {
-    valores.push(reservaId);
-    consultaCruce += ' AND id <> $5';
+async function validarDatosReserva(datos, reservaId = null) {
+  const cliente = await clientesModel.buscarPorId(datos.clienteId);
+  if (!cliente) throw crearError('Cliente no encontrado', 404);
+  if (cliente.no_shows >= 3) {
+    throw crearError('El cliente tiene 3 o más no-shows y no puede reservar');
   }
 
-  const cruce = await pool.query(consultaCruce, valores);
+  const mesa = await mesasModel.buscarPorId(datos.mesaId);
+  if (!mesa) throw crearError('Mesa no encontrada', 404);
+  if (!mesa.activa) throw crearError('La mesa seleccionada no está activa');
+  if (datos.personas > mesa.capacidad) {
+    throw crearError('La cantidad de personas supera la capacidad de la mesa');
+  }
 
-  if (cruce.rowCount > 0) {
+  const diaSemana = new Date(`${datos.fecha}T12:00:00`).getDay();
+  const horario = await horariosModel.buscarPorDiaSemana(diaSemana);
+  if (!horario) {
+    throw crearError('El restaurante no tiene horario de atención para ese día');
+  }
+  if (datos.horaInicio < horario.apertura || datos.horaFin > horario.cierre) {
+    throw crearError(`La reserva debe estar dentro del horario de atención: ${horario.apertura} a ${horario.cierre}`);
+  }
+
+  const existeCruce = await reservasModel.existeCruceActivo({ ...datos, reservaId });
+  if (existeCruce) {
     throw crearError('La mesa ya tiene una reserva activa que se cruza con ese horario');
   }
 }
 
 export async function listarReservas() {
-  const resultado = await pool.query(`
-    SELECT
-      r.id,
-      r.fecha,
-      r.hora_inicio,
-      r.hora_fin,
-      r.personas,
-      r.estado,
-      r.nota,
-      r.fecha_creacion,
-      c.id AS cliente_id,
-      c.nombre AS cliente_nombre,
-      c.telefono AS cliente_telefono,
-      m.id AS mesa_id,
-      m.numero AS mesa_numero,
-      m.ubicacion AS mesa_ubicacion
-    FROM reservas r
-    JOIN clientes c ON c.id = r.cliente_id
-    JOIN mesas m ON m.id = r.mesa_id
-    ORDER BY r.fecha ASC, r.hora_inicio ASC
-  `);
-
-  return resultado.rows;
+  return reservasModel.listar();
 }
 
 export async function buscarReservaPorId(id) {
-  const resultado = await pool.query(
-    `
-    SELECT
-      r.id,
-      r.fecha,
-      r.hora_inicio,
-      r.hora_fin,
-      r.personas,
-      r.estado,
-      r.nota,
-      r.fecha_creacion,
-      c.id AS cliente_id,
-      c.nombre AS cliente_nombre,
-      c.telefono AS cliente_telefono,
-      c.no_shows AS cliente_no_shows,
-      m.id AS mesa_id,
-      m.numero AS mesa_numero,
-      m.capacidad AS mesa_capacidad,
-      m.ubicacion AS mesa_ubicacion
-    FROM reservas r
-    JOIN clientes c ON c.id = r.cliente_id
-    JOIN mesas m ON m.id = r.mesa_id
-    WHERE r.id = $1
-    `,
-    [id]
-  );
-
-  return resultado.rows[0];
+  const reserva = await reservasModel.buscarPorId(id);
+  if (!reserva) throw crearError('Reserva no encontrada', 404);
+  return reserva;
 }
 
-export async function crearReserva(datos) {
-  await validarDatosReserva(
-    datos.clienteId,
-    datos.mesaId,
-    datos.fecha,
-    datos.horaInicio,
-    datos.horaFin,
-    datos.personas
-  );
-
-  const resultado = await pool.query(
-    `
-    INSERT INTO reservas (
-      cliente_id, mesa_id, fecha, hora_inicio, hora_fin, personas, nota
-    )
-    VALUES ($1, $2, $3, $4, $5, $6, $7)
-    RETURNING *
-    `,
-    [
-      datos.clienteId,
-      datos.mesaId,
-      datos.fecha,
-      datos.horaInicio,
-      datos.horaFin,
-      datos.personas,
-      datos.nota || null,
-    ]
-  );
-
-  return resultado.rows[0];
+export async function crearReserva(datosEntrada) {
+  const datos = prepararDatos(datosEntrada);
+  await validarDatosReserva(datos);
+  return reservasModel.crear(datos);
 }
 
-export async function actualizarReserva(id, datos) {
-  const existente = await buscarReservaPorId(id);
-
-  if (!existente) {
-    throw crearError('Reserva no encontrada', 404);
-  }
-
+export async function actualizarReserva(id, datosEntrada) {
+  const existente = await reservasModel.buscarPorId(id);
+  if (!existente) throw crearError('Reserva no encontrada', 404);
   if (existente.estado !== 'pendiente') {
     throw crearError('Solo se pueden editar reservas en estado pendiente');
   }
 
-  await validarDatosReserva(
-    datos.clienteId,
-    datos.mesaId,
-    datos.fecha,
-    datos.horaInicio,
-    datos.horaFin,
-    datos.personas,
-    id
-  );
-
-  const resultado = await pool.query(
-    `
-    UPDATE reservas
-    SET cliente_id = $1,
-        mesa_id = $2,
-        fecha = $3,
-        hora_inicio = $4,
-        hora_fin = $5,
-        personas = $6,
-        nota = $7
-    WHERE id = $8
-    RETURNING *
-    `,
-    [
-      datos.clienteId,
-      datos.mesaId,
-      datos.fecha,
-      datos.horaInicio,
-      datos.horaFin,
-      datos.personas,
-      datos.nota || null,
-      id,
-    ]
-  );
-
-  return resultado.rows[0];
+  const datos = prepararDatos(datosEntrada);
+  await validarDatosReserva(datos, id);
+  return reservasModel.actualizar(id, datos);
 }
 
 export async function cambiarEstado(id, nuevoEstado) {
-  const cliente = await pool.connect();
+  const estadosValidos = ['pendiente', 'confirmada', 'cumplida', 'cancelada', 'no_show'];
+  if (!estadosValidos.includes(nuevoEstado)) throw crearError('Estado no válido', 400);
 
+  const cliente = await pool.connect();
   try {
     await cliente.query('BEGIN');
-
-    const reserva = await cliente.query(
-      'SELECT * FROM reservas WHERE id = $1 FOR UPDATE',
-      [id]
-    );
-
-    if (reserva.rowCount === 0) {
-      throw crearError('Reserva no encontrada', 404);
-    }
-
-    const actual = reserva.rows[0].estado;
+    const reserva = await reservasModel.buscarParaActualizarEstado(id, cliente);
+    if (!reserva) throw crearError('Reserva no encontrada', 404);
 
     const transicionesPermitidas = {
       pendiente: ['confirmada', 'cancelada'],
       confirmada: ['cumplida', 'cancelada', 'no_show'],
-      cumplida: [],
-      cancelada: [],
-      no_show: [],
+      cumplida: [], cancelada: [], no_show: []
     };
-
-    if (!transicionesPermitidas[actual].includes(nuevoEstado)) {
-      throw crearError(
-        `No se permite cambiar el estado de "${actual}" a "${nuevoEstado}"`
-      );
+    if (!transicionesPermitidas[reserva.estado].includes(nuevoEstado)) {
+      throw crearError(`No se permite cambiar el estado de "${reserva.estado}" a "${nuevoEstado}"`);
     }
 
-    const resultado = await cliente.query(
-      'UPDATE reservas SET estado = $1 WHERE id = $2 RETURNING *',
-      [nuevoEstado, id]
-    );
-
+    const actualizada = await reservasModel.actualizarEstado(id, nuevoEstado, cliente);
     if (nuevoEstado === 'no_show') {
-      await cliente.query(
-        'UPDATE clientes SET no_shows = no_shows + 1 WHERE id = $1',
-        [reserva.rows[0].cliente_id]
-      );
+      await clientesModel.incrementarNoShows(reserva.cliente_id, cliente);
     }
-
     await cliente.query('COMMIT');
-    return resultado.rows[0];
+    return actualizada;
   } catch (error) {
     await cliente.query('ROLLBACK');
     throw error;
@@ -280,10 +133,7 @@ export async function cambiarEstado(id, nuevoEstado) {
 }
 
 export async function eliminarReserva(id) {
-  const resultado = await pool.query(
-    'DELETE FROM reservas WHERE id = $1 RETURNING id',
-    [id]
-  );
-
-  return resultado.rows[0];
+  const reserva = await reservasModel.eliminar(id);
+  if (!reserva) throw crearError('Reserva no encontrada', 404);
+  return reserva;
 }

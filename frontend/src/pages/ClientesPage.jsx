@@ -1,100 +1,125 @@
 import { useState } from 'react';
 import { api } from '../services/api';
 import { useApi } from '../hooks/useApi';
+import { obtenerIniciales } from '../utils/formato';
+import Loading from '../components/Loading';
+import ErrorMessage from '../components/ErrorMessage';
+import Icon from '../components/Icon';
+
+const formularioVacio = { nombre: '', telefono: '' };
 
 export default function ClientesPage() {
   const { datos: clientes, cargando, error, recargar } = useApi(api.obtenerClientes);
-
-  const [nombre, setNombre] = useState('');
-  const [telefono, setTelefono] = useState('');
+  const [formulario, setFormulario] = useState(formularioVacio);
+  const [clienteEditando, setClienteEditando] = useState(null);
   const [mensaje, setMensaje] = useState('');
+  const [esError, setEsError] = useState(false);
   const [guardando, setGuardando] = useState(false);
+
+  function cambiarCampo(evento) {
+    const { name, value } = evento.target;
+    setFormulario((actual) => ({ ...actual, [name]: value }));
+  }
+
+  function iniciarEdicion(cliente) {
+    setClienteEditando(cliente.id);
+    setFormulario({ nombre: cliente.nombre, telefono: cliente.telefono });
+    setMensaje('');
+    setEsError(false);
+  }
+
+  function cancelarEdicion() {
+    setClienteEditando(null);
+    setFormulario(formularioVacio);
+    setMensaje('');
+    setEsError(false);
+  }
 
   async function manejarEnvio(evento) {
     evento.preventDefault();
     setMensaje('');
+    setEsError(false);
+    setGuardando(true);
 
     try {
-      setGuardando(true);
+      if (clienteEditando) {
+        await api.actualizarCliente(clienteEditando, formulario);
+        setMensaje('Cliente actualizado correctamente.');
+      } else {
+        await api.crearCliente(formulario);
+        setMensaje('Cliente creado correctamente.');
+      }
 
-      await api.crearCliente({ nombre, telefono });
-
-      setNombre('');
-      setTelefono('');
-      setMensaje('Cliente creado correctamente.');
+      setClienteEditando(null);
+      setFormulario(formularioVacio);
       await recargar();
-    } catch (error) {
-      setMensaje(error.message);
+    } catch (err) {
+      setMensaje(err.message);
+      setEsError(true);
     } finally {
       setGuardando(false);
     }
   }
 
   return (
-    <section>
-      <h1>Clientes</h1>
-      <p>Registra y consulta los clientes del restaurante.</p>
+    <div className="page-stack">
+      <section className="page-hero">
+        <div>
+          <span className="eyebrow">DIRECTORIO</span>
+          <h1>Clientes</h1>
+          <p>Administra los contactos y consulta su historial de asistencia.</p>
+        </div>
+      </section>
 
-      <form className="formulario" onSubmit={manejarEnvio}>
-        <h2>Nuevo cliente</h2>
+      <div className="clients-layout">
+        <section className="panel-card clients-list">
+          <div className="panel-card__header">
+            <div><span className="eyebrow">REGISTROS</span><h2>Directorio de clientes</h2></div>
+            {!cargando && <span className="count-pill">{clientes.length} clientes</span>}
+          </div>
 
-        <label>
-          Nombre completo
-          <input
-            type="text"
-            value={nombre}
-            onChange={(evento) => setNombre(evento.target.value)}
-            placeholder="Ejemplo: Laura Gómez"
-            required
-          />
-        </label>
+          {cargando && <Loading texto="Cargando el directorio..." />}
+          {error && <ErrorMessage mensaje={error} />}
 
-        <label>
-          Teléfono
-          <input
-            type="text"
-            value={telefono}
-            onChange={(evento) => setTelefono(evento.target.value)}
-            placeholder="8888-4444"
-            required
-          />
-        </label>
+          {!cargando && !error && (
+            <div className="table-scroll">
+              <table className="data-table clients-table">
+                <thead><tr><th>Cliente</th><th>Teléfono</th><th>Historial</th><th>Acción</th></tr></thead>
+                <tbody>
+                  {clientes.map((cliente) => (
+                    <tr key={cliente.id} className={clienteEditando === cliente.id ? 'row--selected' : ''}>
+                      <td><div className="person-cell"><span className="avatar">{obtenerIniciales(cliente.nombre)}</span><strong>{cliente.nombre}</strong></div></td>
+                      <td><span className="with-icon"><Icon name="phone" size={16} />{cliente.telefono}</span></td>
+                      <td>{Number(cliente.no_shows) > 0 ? <span className="risk-badge">Ausencias previas: {cliente.no_shows}</span> : <span className="clean-badge"><Icon name="check" size={13} /> Sin ausencias</span>}</td>
+                      <td><button className="table-action" type="button" onClick={() => iniciarEdicion(cliente)} aria-label={`Editar cliente ${cliente.nombre}`}><Icon name="edit" size={15} /> Editar</button></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {clientes.length === 0 && <div className="empty-state"><Icon name="users" size={28} /><strong>Aún no hay clientes</strong><p>Registra el primero desde el formulario.</p></div>}
+            </div>
+          )}
+        </section>
 
-        <button type="submit" disabled={guardando}>
-          {guardando ? 'Guardando...' : 'Guardar cliente'}
-        </button>
+        <aside className="panel-card create-client">
+          <span className="eyebrow"><Icon name={clienteEditando ? 'edit' : 'plus'} size={15} /> {clienteEditando ? 'EDITAR REGISTRO' : 'NUEVO REGISTRO'}</span>
+          <h2>{clienteEditando ? 'Editar cliente' : 'Agregar cliente'}</h2>
+          <p>{clienteEditando ? 'Actualiza únicamente el nombre o teléfono del cliente.' : 'Guarda sus datos para agilizar futuras reservas.'}</p>
 
-        {mensaje && <p className="mensaje">{mensaje}</p>}
-      </form>
+          <form className="stack-form" onSubmit={manejarEnvio}>
+            <label>Nombre completo<input name="nombre" type="text" value={formulario.nombre} onChange={cambiarCampo} placeholder="Ej. Laura Gómez" required /></label>
+            <label>Teléfono<input name="telefono" type="tel" value={formulario.telefono} onChange={cambiarCampo} placeholder="8888-4444" required /></label>
 
-      <div className="panel">
-        <h2>Lista de clientes</h2>
+            <button className="button button--primary button--full" type="submit" disabled={guardando}>
+              <Icon name="save" size={17} />
+              {guardando ? 'Guardando...' : clienteEditando ? 'Guardar cambios' : 'Guardar cliente'}
+            </button>
 
-        {cargando && <p>Cargando clientes...</p>}
-        {error && <p className="mensaje-error">{error}</p>}
-
-        {!cargando && !error && (
-          <table>
-            <thead>
-              <tr>
-                <th>Nombre</th>
-                <th>Teléfono</th>
-                <th>No-shows</th>
-              </tr>
-            </thead>
-
-            <tbody>
-              {clientes.map((cliente) => (
-                <tr key={cliente.id}>
-                  <td>{cliente.nombre}</td>
-                  <td>{cliente.telefono}</td>
-                  <td>{cliente.no_shows}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
+            {clienteEditando && <button className="button button--ghost button--full" type="button" onClick={cancelarEdicion} disabled={guardando}>Cancelar edición</button>}
+            {mensaje && <div className={`alert ${esError ? 'alert--error' : 'alert--success'}`} role={esError ? 'alert' : 'status'}><Icon name={esError ? 'alert' : 'check'} size={17} /><span>{mensaje}</span></div>}
+          </form>
+        </aside>
       </div>
-    </section>
+    </div>
   );
 }

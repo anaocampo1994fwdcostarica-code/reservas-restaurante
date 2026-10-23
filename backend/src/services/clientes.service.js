@@ -1,50 +1,67 @@
-import pool from '../db.js';
+import * as clientesModel from '../models/clientes.model.js';
+
+function crearError(mensaje, status) {
+  const error = new Error(mensaje);
+  error.status = status;
+  return error;
+}
+
+function normalizarDatos(datos) {
+  const { nombre, telefono } = datos || {};
+  if (typeof nombre !== 'string' || nombre.trim().length < 3 ||
+      typeof telefono !== 'string' || telefono.trim().length < 8) {
+    throw crearError(
+      'Nombre y teléfono son obligatorios. El nombre debe tener al menos 3 caracteres.',
+      400
+    );
+  }
+  return { nombre: nombre.trim(), telefono: telefono.trim() };
+}
+
+function traducirErrorBaseDatos(error) {
+  if (error.code === '23505') {
+    throw crearError('Ya existe un cliente con ese número de teléfono', 409);
+  }
+  if (error.code === '23503') {
+    throw crearError('No se puede eliminar el cliente porque tiene reservas asociadas', 409);
+  }
+  throw error;
+}
 
 export async function listarClientes() {
-  const resultado = await pool.query(
-    'SELECT id, nombre, telefono, no_shows FROM clientes ORDER BY nombre ASC'
-  );
-
-  return resultado.rows;
+  return clientesModel.listar();
 }
 
 export async function buscarClientePorId(id) {
-  const resultado = await pool.query(
-    'SELECT id, nombre, telefono, no_shows FROM clientes WHERE id = $1',
-    [id]
-  );
-
-  return resultado.rows[0];
+  const cliente = await clientesModel.buscarPorId(id);
+  if (!cliente) throw crearError('Cliente no encontrado', 404);
+  return cliente;
 }
 
-export async function crearCliente(nombre, telefono) {
-  const resultado = await pool.query(
-    `INSERT INTO clientes (nombre, telefono)
-     VALUES ($1, $2)
-     RETURNING id, nombre, telefono, no_shows`,
-    [nombre, telefono]
-  );
-
-  return resultado.rows[0];
+export async function crearCliente(datos) {
+  try {
+    return await clientesModel.crear(normalizarDatos(datos));
+  } catch (error) {
+    return traducirErrorBaseDatos(error);
+  }
 }
 
-export async function actualizarCliente(id, nombre, telefono) {
-  const resultado = await pool.query(
-    `UPDATE clientes
-     SET nombre = $1, telefono = $2
-     WHERE id = $3
-     RETURNING id, nombre, telefono, no_shows`,
-    [nombre, telefono, id]
-  );
-
-  return resultado.rows[0];
+export async function actualizarCliente(id, datos) {
+  try {
+    const cliente = await clientesModel.actualizar(id, normalizarDatos(datos));
+    if (!cliente) throw crearError('Cliente no encontrado', 404);
+    return cliente;
+  } catch (error) {
+    return traducirErrorBaseDatos(error);
+  }
 }
 
 export async function eliminarCliente(id) {
-  const resultado = await pool.query(
-    'DELETE FROM clientes WHERE id = $1 RETURNING id',
-    [id]
-  );
-
-  return resultado.rows[0];
+  try {
+    const cliente = await clientesModel.eliminar(id);
+    if (!cliente) throw crearError('Cliente no encontrado', 404);
+    return cliente;
+  } catch (error) {
+    return traducirErrorBaseDatos(error);
+  }
 }
